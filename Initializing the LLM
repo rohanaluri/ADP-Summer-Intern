@@ -1,0 +1,53 @@
+from langchain_openai import ChatOpenAI, AzureChatOpenAI
+import json
+
+
+vendor_pdfs = {
+   "paycor": "/Workspace/Users/rohan.aluri@adp.com/Document_Tests/PaycorTest.pdf",
+   "intuit": "/Workspace/Users/rohan.aluri@adp.com/Document_Tests/IntuitTest.pdf",
+   "paycom": "/Workspace/Users/rohan.aluri@adp.com/Document_Tests/PayComTest2.pdf",
+   "paychex": "/Workspace/Users/rohan.aluri@adp.com/Document_Tests/PaychexTest.pdf",
+   "paylocity": "/Workspace/Users/rohan.aluri@adp.com/Document_Tests/PaylocityTest.pdf",
+   "quickbook": "/Workspace/Users/rohan.aluri@adp.com/Document_Tests/QuickbookTest.pdf"}
+
+
+schema = {
+   "jd": {
+       "form": {
+           "Name": {
+               "type": "string",
+               "description": "The full name of the employee for a specific vendor."
+           },
+           "Employee_ID": {
+               "type": "string",
+               "description": "The unique identifier for an employee consisting of numbers and letters."
+           },
+           "Pay_Date": {
+               "type": "string",
+               "description": "The date when a payment is made in the form of MM/DD/YYYY."
+           },
+           "Earnings": {
+               "type": "object",
+               "properties": {"earning_code":{"type": "array", "items": {"type": "string"}}, "earning_amount":{"type": "array", "items": {"type": "string"}}},
+               #"additionalProperties": {"type": "string"},
+               "description": "Information about different forms of pay (regular, overtime, bonus, etc.) along with the value. Each person can have different amounts and forms of earnings."
+           },
+           "Payroll_Codes": {
+               "type": "object",
+               "properties": {"payroll_code": {"type": "array", "items": {"type": "string"}}, "payroll_amount": {"type": "array", "items": {"type": "string"}}},
+               #"additionalProperties": {"type": "string"},
+               "description": "Information about the different forms of taxes and deductions for an individual. Each person can have different amounts and forms of payroll codes."
+           },
+           "Net_Pay": {
+               "type": "string",
+               "description": "The total amount of income for an employee after the consideration of deductions and withholdings"
+           }}}}
+
+
+llm = AzureChatOpenAI(
+   deployment_name="gpt-4-turbo",
+   model_name="gpt-4",
+   seed = 12,
+   azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+   openai_api_version=os.getenv("OPENAI_API_VERSION"),
+   temperature=0)
