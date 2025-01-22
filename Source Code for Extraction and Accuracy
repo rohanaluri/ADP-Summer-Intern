@@ -1,0 +1,264 @@
+import fitz
+import json
+from langchain.prompts import PromptTemplate
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema import HumanMessage
+from langchain_openai import ChatOpenAI, AzureChatOpenAI
+from langchain_community.callbacks import get_openai_callback
+from langchain.output_parsers.openai_tools import JsonOutputToolsParser
+
+
+class PayrollInformation():
+   def __init__(self, llm, schemas, templates, examples):
+       self.schemas = schemas
+       self.llm = llm
+       self.templates = templates 
+       self.examples = examples 
+   def extract_pdf_text(self, pdf_path, max_pages=3):
+       doc = fitz.open(pdf_path)
+       total_pages = min(len(doc), max_pages)
+       text = ""
+       for page_number in range(total_pages):
+           text += doc[page_number].get_text() + "\n"
+       return text
+   def clean_extracted_info(self, extracted_info):
+       if extracted_info.startswith("```json"):
+           extracted_info = extracted_info[len("```json"):].strip()
+       if extracted_info.endswith("```"):
+           extracted_info = extracted_info[:-len("```")].strip()
+       return extracted_info
+   def process_document(self, vendor_pdfs):
+       combined_results = {}
+       for vendor, pdf_path in vendor_pdfs.items():
+           document_text = self.extract_pdf_text(pdf_path)
+           extracted_info, costs, tokens = self.use_gpt_to_extract('jd', document_text, vendor)
+           cleaned_info = self.clean_extracted_info(extracted_info).replace("\\n", "").replace("\\t", "").replace("  ", " ").strip()
+           print(cleaned_info)
+           extracted_entries = json.loads(cleaned_info)
+           if vendor not in combined_results:
+               combined_results[vendor] = []
+           combined_results[vendor].extend(extracted_entries)
+       return combined_results
+   def use_gpt_to_extract(self, jd, document_text, vendor):
+       template_prompt = self.templates[vendor]
+       example = json.dumps(self.examples[vendor], indent=4) 
+       prompt = ChatPromptTemplate.from_template(template_prompt)
+       prompt_text = prompt.format(document=document_text, example1=example, example2=example, example3=example, example4=example, example5=example, example6=example)
+       with get_openai_callback() as cb:
+           response = self.llm.invoke(prompt_text)
+           costs = cb.total_cost
+           tokens = cb.total_tokens
+       return response.content, costs, tokens
+   def compare_with_ground_truth(self, combined_results, ground_truths):
+       total_entries = 0
+       correct_entries = 0
+       vendor_accuracies = {}
+       entry_counter = 1
+       for vendor in ground_truths:
+           vendor_total = 0
+           vendor_correct = 0
+           if vendor in combined_results:
+               for ground_truth, extracted in zip(ground_truths[vendor], combined_results[vendor]):
+                   total_entries += 1
+                   vendor_total += 1
+                   name = ground_truth.get("Name", "Unknown")
+                   if ground_truth == extracted:
+                       correct_entries += 1
+                       vendor_correct += 1
+                       print(f"\n{entry_counter}. MATCH for vendor: {vendor}")
+                   else:
+                       if ground_truth["Name"] == extracted["Name"]:
+                           print(f"\n{entry_counter}. MISMATCH for vendor: {vendor}")
+                           print(f"Name: {ground_truth['Name']}")
+                       else:
+                           print(f"\n{entry_counter}. MISMATCH for vendor: {vendor}")
+                           print(f"Ground_Truth Name: {ground_truth['Name']}")
+                           print(f"Extracted Name: {extracted['Name']}")
+                       for key in ground_truth.keys():
+                           if key != "Name" and ground_truth[key] != extracted[key]:
+                               print(f"Incorrect Field: {key}")
+                               print(f"\nGround_truth: {json.dumps(ground_truth[key], indent=4)}")
+                               print(f"\nExtracted: {json.dumps(extracted[key], indent=4)}")
+                   entry_counter += 1
+           vendor_accuracy = vendor_correct / vendor_total
+           vendor_accuracies[vendor] = vendor_accuracy
+       accuracy = correct_entries / total_entries
+       print(f"\nTotal Entries: {total_entries}")
+       print(f"Correct Entries: {correct_entries}")
+       return accuracy, vendor_accuracies
+  
+templates = {
+   'paycor': """You are a payroll expert who is assigned the task of extracting the following information from the context of the payroll document provided below: Name, Employee ID (include both the letter and number as they are unique for every person), Pay_Date (03/10/2023), Pay_Period (use the same formatting as the example below where we have "Period Starting" - "Period Ending" separated by a hyphen), Page_Number (the number of the page in which the person's name is located, note that there are page numbers in the document at the bottom right) Earnings (we are interested in the amount for REG, OT, and CODED only if they have a numeric value, otherwise if they contain an empty string, "", please DO NOT include that earning in the output), Payroll_Codes (including all forms of taxes and deductions along with their value) and Net_Pay (number value). If any value is not included in the document, please indicate that it is not provided. Output an entry for EVERY name listed on every page in the same format as the example provided below, but as a JSON string with a dictionary using double quotations, do NOT provide any details about the structure of the code.. Lastly, you have to make sure there is NO additional text to describe the output at the start, like “Payroll_Details" or "json ```" as this will definitely mess up the formatting. Start with a bracket and the first entry and make sure the dictionary is enclosed by brackets, []. Note that if you see a term like "122Bonus", to include all letters and numbers in the output. For the earnings make sure to keep note of the spacing of the values. For instance: values on the left side belong to REG, values in the middle column belong to OT, and values in the right side belong to CODED. For example: "420.00" is in the middle column so it belongs to OT, "1,311.00" is in the leftmost column, so it belongs to REG, and "110.00Bonus" is in the rightmost column, so it belongs to CODED. NOTE: There should be NO instances anywhere we have an empty string, "", in the output.
+   Context of Document:
+   {document}
+   Example of Entry:
+   {example1}""",
+   'intuit': """You are a payroll expert who is assigned the task of extracting the following information from the context of the payroll document provided below: Name, Employee ID (unique for every person), Pay_Date (07/21/2023), Pay_Period (the range of dates located under the Pay_Date in the same format as the example seen below), Page_Number (the number of the page in which the person's name is located, note that there are page numbers in the document at the bottom right and that Luz Alvecedo is the only person on the first page as indicated on the bottom right by the 1), Earnings (make sure EVERYTHING that is listed in the third column for each person is inlcuded in the output and we want to retrieve the gross pay value, also make sure to capitilize the first letters of Pretax Deductions wherever applicable as not doing so will cause formatting errors), Payroll_Codes (make sure EVERYTHING that is listed in the fifth column ONLY for each person is included in the output) and Net_Pay (number value located in the column labeled "Net pay"). If any value is not included in the document, please indicate that it is not provided. Output an entry for EVERY name listed on every page in the same format as the example provided below, but as a JSON string with a dictionary using double quotations, do NOT provide any details about the structure of the code. Lastly, you have to make sure there is NO additional text to describe the output at the start, like “Payroll_Details" or "json ```" as this will definitely mess up the formatting. Start with a bracket and the first and make sure the dictionary is enclosed by brackets, []. There should be 11 entries. If the Employee ID is not provided in the document, then indicate it is not provided. Additionally, make sure we don't have double spaces "  ", as it will mess up the formatting. It is really important to keep in mind that if entries in the third column (for earnings header) and fifth column (for payroll codes header) are equal to "0.00", still report them and include them in the output. An example would be to include the following value if it was present for a person "Bonus": "0.00". There should be no instances where we have an empty string, "", in the output.
+   Context of Document:
+   {document}
+   Example of Entry:
+   {example2}""",
+   'paycom': """You are a payroll expert who is assigned the task of extracting the following information from the context of the payroll document provided below: Name, Employee ID (include both the letter and number as they are unique for every person), Pay_Date (03/24/2023), Period_Ending (the period ending date located in the top right hand corner), Page_Number (the page number that a person's covers, if the information goes on to the next page, output the value for Page_Number as the two pages the information is on separated by a hyphen as seen in the example below), Earnings (we are interested in the amount only for Regular, Fica, Bonus $, and GROSS if they are available), Payroll_Codes (both taxes and deductions combined along with their value, REMEMBER to follow the capitilization of words EXACTLY how it is on the document) and Net_Pay (number value). If any value is not included in the document, please indicate that it is not provided. Output an entry for EVERY name listed on every page in the same format as the example provided below, but as a JSON string with a dictionary using double quotations, do NOT provide any details about the structure of the code.. Lastly, you have to make sure there is NO additional text to describe the output at the start, like “Payroll_Details" or "json ```" as this will definitely mess up the formatting. Start with a bracket and the first and make sure the dictionary is enclosed by brackets, []. There should be 10 entries. If anything has a value of an empty string "", please remove it from the output. Please note that "Fica" and "Other $" should be included in the earnings header ONLY, not the "Payroll_Codes" header. If the earnings or Payroll_codes are not provided or has an empty string, "", then please indicate it is not provided by simply outputting "Not Provided" in the respective section. Also, keep in mind to capitalize the first letters of each word in "Pretax Deductions" and "Dental ER Memo" as this is how it is presented in the document and  or else this will lower our accuracy. NOTE: To accuractely retrive the page number, see if there is an empty employee box at the start of the page, if there is no name in this box then we can tell that the information belongs to the previous employee. For example, we have "1-2" for CRUZ, LIANA as the next employee name in the document is blank indicating it is a continuation of her information on to the next page
+   Context of Document:
+   {document}
+   Example of Entry:
+   {example3}""",
+   'paychex': """You are a payroll expert who is assigned the task of extracting the following information from the context of the payroll document provided below: Name (if the name includes "..." at the end, then remove the ellipsis, for example, Bockstanz, Frankl... should output as Bockstanz, Frankl ), Employee ID (a numeric value that is unique for every person), Pay_Date (08/10/22), Pay_Period (The Period Start - End Date located at the bottom of the document), Page_Number (the page the person's information is located on, if a person's information is on multiple pages separate the values by a hyphen as seen in the example below "2-3"), Earnings (we are interested in the value that corresponds to "Employee Total" in the Hours and Earnings columns and we need all of the values to have two decimal places, for example, 5.00), Payroll_Codes (including all forms of withholdings in the "Withholdings" column along with the number value, and we also need all of the values to have two decimal places, for example, 12.00) and Net_Pay (number value). Output an entry for EVERY name listed on every page in the same format as the example provided below, but as a JSON string with a dictionary using double quotations, do NOT provide any details about the structure of the code. Lastly, you have to make sure there is NO additional text to describe the output at the start, like “Payroll_Details" or "json ```" as this will definitely mess up the formatting. Start with a bracket and the first and make sure the dictionary is enclosed by brackets, []. Please remember to include the names in order as it appears on the document or else we will lower our accuracy. Remember that we should format the response as a JSON string with a dictionary enclosed in brackets, and we should NEVER have backticks,```, or any words before the opening bracket containing our dictionary or our code won't work.
+   Context of Document:
+   {document}
+   Example of Entry:
+   {example4}""",
+   'paylocity': """You are a payroll expert who is assigned the task of extracting the following information from the context of the payroll document provided below: Name, Employee ID (a numeric value that is unique for each person), Pay_Date (06/02/2023), Pay_Period (located at the top of the documnet although the dates are seperated by a hyphen as seen in the example below), Page_Number (the number of the page the individual's name is located on, note that the page number is presented at the top right hand side of the document), Earnings (we are interested in the amount only for codes REG, 401ER, and ERMED if they apply to the person in the document, if they aren't applicable do not include the code in the output), Payroll_Codes (we want to retrieve the code and the amount in the second and third tables, note that we don't need the taxable value) and Net_Pay (number value located on the right for each person) Output an entry for EVERY name listed on every page in the same format as the example provided below, but as a JSON string with a dictionary using double quotations, do NOT provide any details about the structure of the code. Lastly, you have to make sure there is NO additional text to describe the output at the start, like “Payroll_Details" or "json ```" as this will definitely mess up the formatting. Start with a bracket and the first and make sure the dictionary is enclosed by brackets, []. Please remember to include the names in order as it appears on the document or else we will lower our accuracy. Remember that we should format the response as a JSON string with a dictionary enclosed in brackets, and we should NEVER have backticks,```, or any words before the opening bracket containing our dictionary or our code won't work.
+   Context of Document:
+   {document}
+   Example of Entry:
+   {example5}""",
+   'quickbook': """You are a payroll expert who is assigned the task of extracting the following information from the context of the payroll document provided below: Name, Employee ID (if the employee id is not provided, simply output "Not Provided"), Pay_Date (06/30/2023), Pay_Period (the range of dates located under the Pay Date), Page_Number (although the page number is not located on the document, whenever we detect a break in the pages, we can assume a new page occurs, for instance the name Danny Castillo is on the second page), Earnings (we are interested in the pay and the amount value with a dollar sign symbol and rounded to two decimal places as seen in the same format on the documenbt), Payroll_Codes (we want to retrieve ALL the codes and the amounts in the vertical column "Employee taxes" even if the amount is zero for each person, for the amount value we want a dollar sign and rounded to two decimal places as seen in the same format on the document ) and Net_Pay (number value located on the left under the name for each person. Output an entry for EVERY name listed on every page in the same format as the example provided below, but as a JSON string with a dictionary using double quotations, do NOT provide any details about the structure of the code. Lastly, you have to make sure there is NO additional text to describe the output at the start, like “Payroll_Details" or "json ```" as this will definitely mess up the formatting. Start with a bracket and the first entry and make sure the dictionary is enclosed by brackets, []. Please remember to include the names in order as it appears on the document or else we will lower our accuracy. Remember that we should format the response as a JSON string with a dictionary enclosed in brackets, and we should NEVER have backticks,```, or any words before the opening bracket containing our dictionary or our code won't work.
+   Context of Document:
+   {document}
+   Example of Entry:
+   {example6}"""}
+  
+examples = {
+   'paycor': {
+       "Name": "Booth, Zachary",
+       "Employee_ID": "EE#88",
+       "Pay_Date": "03/10/2023",
+       "Pay_Period": "02/19/2023 - 03/04/2023",
+       "Page_Number": "1",
+       "Earnings": {
+           "REG": "612.00",
+           "CODED": "110.00Bonus"
+       },
+       "Payroll_Codes": {
+           "SOC": "44.76",
+           "MED": "10.47",
+           "OH": "10.38"
+       },
+       "Net_Pay": "656.39"
+   },
+   'intuit': {
+       "Name": "Bellamy, Angela L",
+       "Employee_ID": "Not provided",
+       "Pay_Date": "07/21/2023",
+       "Pay_Period": "07/01 - 07/14",
+       "Page_Number": "2",
+       "Earnings": {
+           "Gross": "$930.41",
+           "Regular": "$826.41",
+           "Holiday": "$104.00",
+           "Bonus": "$0.00",
+           "Adjusted Gross": "$930.41"
+       },
+       "Payroll_Codes": {
+           "Employee taxes": "-$120.94",
+           "FIT": "-$49.77",
+           "SS": "-$57.68",
+           "Med": "-$13.49",
+           "Aftertax Deductions": "-$131.92",
+           "Aflac": "-$31.92",
+           "Rausch Sturm LLP": "-$100.00",
+           },
+       "Net_Pay": "$677.55"
+   },
+   'paycom': {
+       "Name": "CRUZ, LIANA",
+       "Employee_ID": "9014",
+       "Pay_Date": "03/24/2023",
+       "Period_Ending": "03/17/2023",
+       "Page_Number": "1-2",
+       "Earnings": {
+           "Regular": "1,923.08",
+           "GROSS": "1,923.08"
+       },
+       "Payroll_Codes": {
+           "Federal W/H (M)": "69.30",
+           "Medicare": "26.94",
+           "Social Security": "115.22",
+           "IL State W/H (R/0)": "87.04",
+           "AD&D Employee": "0.69",
+           "AD&D Spouse": "0.13",
+           "403B2 $": "100.00",
+           "BCBS Dental": "8.39",
+           "Medical HMO": "56.31",
+           "Life INS EE": "2.31",
+           "Life Ins Spouse": "0.58",
+           "Basic Life Memo": "1.58",
+           "Dental ER Memo": "7.35",
+           "ER Paid Medical HMO": "256.64",
+           },
+       "Net_Pay": "1,456.17"
+   },
+   'paychex': {
+       "Name": "McBride, Shawn",
+       "Employee_ID": "326",
+       "Pay_Date": "08/10/22",
+       "Pay_Period": "08/01/22 - 08/07/22",
+       "Page_Number": "1-2",
+       "Earnings": {
+           "Hours": "5.00",
+           "Earnings": "50.00"
+       },
+       "Payroll_Codes": {
+           "Social Security": "3.10",
+           "Medicare": "0.73",
+           "MI Income Tax": "2.13",
+           "OH TOLED CTY I": "1.25"
+       },
+       "Net_Pay": "42.79"
+   },
+   'paylocity': {
+       "Name": "McKee, Sean M.",
+       "Employee_ID": "90",
+       "Pay_Date": "06/02/2023",
+       "Pay_Period": "05/15/2023 - 05/28/2023",
+       "Page_Number": "1",
+       "Earnings": {
+           "REG": "2,192.31",
+           "401ER": "87.69",
+           "ERMED": "119.31"
+       },
+       "Payroll_Codes": {
+           "FITW": "148.91",
+           "MED": "28.01",
+           "SS": "119.77",
+           "IL": "86.29",
+           "401K": "87.69",
+           "401L1": "155.68",
+           "DNTML": "28.64",
+           "FSA": "105.76",
+           "UHDM2": "123.10",
+           "VISML": "3.02",
+           "VLAD2": "28.10"
+       },
+       "Net_Pay": "1,277.34"
+   },
+   'quickbook': {
+       "Name": "Kevin Casillas Corona",
+       "Employee_ID": "Not Provided",
+       "Pay_Date": "06/30/2023",
+       "Pay_Period": "06/18/2023 - 06/24/2023",
+       "Page_Number": "2-3",
+       "Earnings": {
+           "Regular Pay": "$0.00",
+           "Hourly 2": "$1,120.00",
+           "Overtime Pay": "$966.00",
+           "Drive Time": "$0.00",
+           "Fringe Benefits": "$830.97",
+           "Nontaxable Per Diem" : "$0.00"
+       },
+       "Payroll_Codes": {
+           "Federal Income Tax": "$62.55",
+           "Social Security": "$129.33",
+           "Medicare": "$30.25",
+           "SC Income Tax": "$98.19",
+       },
+       "Net_Pay": "$2,596.65"}}
+
+
+payroll_info = PayrollInformation(llm=llm, schemas=schema, templates=templates, examples=examples)
+combined_results = payroll_info.process_document(vendor_pdfs)
+accuracy, vendor_accuracies = payroll_info.compare_with_ground_truth(combined_results, ground_truths)
+print(f"\nOverall Accuracy: {accuracy * 100:.2f}%")
+for vendor, accuracy in vendor_accuracies.items():
+   print(f"    -{vendor}: {accuracy * 100:.2f}%")
