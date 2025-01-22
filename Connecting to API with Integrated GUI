@@ -1,0 +1,183 @@
+import sys
+import json
+import requests
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLineEdit, QHBoxLayout, QLabel, QPushButton, QComboBox, QMessageBox
+from PyQt5.QtCore import Qt
+
+
+API_INVOKE_URL = 'https://56t4splb05.execute-api.us-east-1.amazonaws.com/extract/extract'
+
+
+class ProcessWindow(QWidget):
+   def __init__(self, main_window, payload):
+       super().__init__()
+       self.main_window = main_window
+       self.payload = payload
+       self.setWindowTitle("Extraction Status")
+       self.resize(650, 450)
+       vbox = QVBoxLayout()
+       self.label = QLabel()
+       vbox.addWidget(self.label)
+       hbox = QHBoxLayout()
+       self.back = QPushButton("Back to Home Screen")
+       self.back.clicked.connect(self.go_back_to_main)
+       hbox.addWidget(self.back)
+       self.close_app = QPushButton("Close Application")
+       self.close_app.clicked.connect(self.close_application)
+       hbox.addWidget(self.close_app)
+       vbox.addLayout(hbox)
+       self.setLayout(vbox)
+       self.invoke_api()
+   def go_back_to_main(self):
+       self.hide()
+       self.main_window.reset_fields()
+       self.main_window.show()
+   def close_application(self):
+       QApplication.quit()
+   def invoke_api(self):
+       try:
+           print(f"Sending payload: {self.payload}")
+           response = requests.post(API_INVOKE_URL, json=self.payload)
+           response.raise_for_status()
+           response_data = response.json()
+           print(f"API Response: {response_data}")
+           message = json.loads(response_data.get("body", ""))
+           if "Error" in message:
+               self.label.setText(f"Please verify your input credentials according to the message below.\n\nAPI {message}")
+           else:
+               self.label.setText(f"Your request is in process and will take a couple of minutes to load.\n\nAPI {message}")
+       except requests.exceptions.RequestException as e:
+           print(f"RequestException: {str(e)}")
+           self.label.setText("An error has occurred. Please verify your environment is set up properly.")
+           QMessageBox.critical(self, "Request Error", f"Error invoking API: {str(e)}")
+class ConfirmationWindow(QWidget):
+   def __init__(self, main_window, payload):
+       super().__init__()
+       self.main_window = main_window
+       self.payload = payload
+       self.setWindowTitle("Confirmation Window")
+       self.resize(650, 450)
+       vbox = QVBoxLayout()
+       self.instruction_label = QLabel("Please review whether the information you entered is correct:")
+       vbox.addWidget(self.instruction_label)
+       self.info_label = QLabel(f"\nClient ID: {payload['client_id']}\n\nDocument ID: {payload['document_id']}\n\nVendor: {payload['vendor']}")
+       vbox.addWidget(self.info_label)
+       hbox = QHBoxLayout()
+       self.edit_button = QPushButton("No, I need to make changes. Go back to the home screen.")
+       self.edit_button.clicked.connect(self.go_back_to_main)
+       hbox.addWidget(self.edit_button)
+       self.confirm_button = QPushButton("Yes, this information is correct. Continue to extraction.")
+       self.confirm_button.clicked.connect(self.proceed_to_extraction)
+       hbox.addWidget(self.confirm_button)
+       hbox.setAlignment(Qt.AlignCenter)
+       vbox.addLayout(hbox)
+       self.setLayout(vbox)
+   def proceed_to_extraction(self):
+       self.process_window = ProcessWindow(self.main_window, self.payload)
+       self.hide()
+       self.process_window.show()
+   def go_back_to_main(self):
+       self.hide()
+       self.main_window.show()
+class MainWindow(QWidget):
+   def __init__(self):
+       super().__init__()
+       self.setWindowTitle("Payroll Document Extractor")
+       self.resize(650, 450)
+       vbox = QVBoxLayout()
+       hbox1 = QHBoxLayout()
+       hbox1.addWidget(QLabel("Client ID: "))
+       self.client_id_edit = QLineEdit()
+       self.client_id_edit.setPlaceholderText("Provide Client_ID information here and press 'Enter' to save the results.")
+       self.client_id_label = QLabel()
+       self.client_id_label.hide()
+       self.client_id_edit.returnPressed.connect(self.save_client_id)
+       self.client_id_edit_button = QPushButton("Edit")
+       self.client_id_edit_button.clicked.connect(self.edit_client_id)
+       self.client_id_edit_button.hide()
+       hbox1.addWidget(self.client_id_edit)
+       hbox1.addWidget(self.client_id_label)
+       hbox1.addWidget(self.client_id_edit_button)
+       hbox2 = QHBoxLayout()
+       hbox2.addWidget(QLabel("Document ID: "))
+       self.document_id_edit = QLineEdit()
+       self.document_id_edit.setPlaceholderText("Provide Document_ID information here and press 'Enter' to save the results.")
+       self.document_id_label = QLabel()
+       self.document_id_label.hide()
+       self.document_id_edit.returnPressed.connect(self.save_document_id)
+       self.document_id_edit_button = QPushButton("Edit")
+       self.document_id_edit_button.clicked.connect(self.edit_document_id)
+       self.document_id_edit_button.hide()
+       hbox2.addWidget(self.document_id_edit)
+       hbox2.addWidget(self.document_id_label)
+       hbox2.addWidget(self.document_id_edit_button)
+       hbox3 = QHBoxLayout()
+       hbox3.addWidget(QLabel("Please Select the Vendor: "))
+       self.vendor_combo = QComboBox()
+       self.vendor_combo.addItems(["paycor", "paycom", "paychex", "paylocity", "intuit", "quickbook"])
+       hbox3.addWidget(self.vendor_combo)
+       vbox.addLayout(hbox1)
+       vbox.addLayout(hbox2)
+       vbox.addLayout(hbox3)
+       self.continue_button = QPushButton("Continue")
+       self.continue_button.setEnabled(False)
+       self.continue_button.clicked.connect(self.prepare_confirmation)
+       vbox.addWidget(self.continue_button)
+       self.setLayout(vbox)
+   def save_client_id(self):
+       client_id = self.client_id_edit.text()
+       self.client_id_label.setText(client_id)
+       self.client_id_edit.hide()
+       self.client_id_label.show()
+       self.client_id_edit_button.show()
+       self.check_fields()
+   def edit_client_id(self):
+       self.client_id_label.hide()
+       self.client_id_edit_button.hide()
+       self.client_id_edit.show()
+       self.client_id_edit.setFocus()
+   def save_document_id(self):
+       document_id = self.document_id_edit.text()
+       self.document_id_label.setText(document_id)
+       self.document_id_edit.hide()
+       self.document_id_label.show()
+       self.document_id_edit_button.show()
+       self.check_fields()
+   def edit_document_id(self):
+       self.document_id_label.hide()
+       self.document_id_edit_button.hide()
+       self.document_id_edit.show()
+       self.document_id_edit.setFocus()
+   def reset_fields(self):
+       self.client_id_edit.clear()
+       self.client_id_edit.show()
+       self.client_id_label.hide()
+       self.client_id_edit_button.hide()
+       self.document_id_edit.clear()
+       self.document_id_edit.show()
+       self.document_id_label.hide()
+       self.document_id_edit_button.hide()
+       self.vendor_combo.setCurrentIndex(0)
+       self.continue_button.setEnabled(False)
+   def check_fields(self):
+       if self.client_id_label.isVisible() and self.document_id_label.isVisible():
+           self.continue_button.setEnabled(True)
+   def prepare_confirmation(self):
+       client_id = self.client_id_edit.text()
+       document_id = self.document_id_edit.text()
+       vendor = self.vendor_combo.currentText()
+       payload = {
+           "client_id": client_id,
+           "document_id": document_id,
+           "vendor": vendor
+       }
+       self.show_confirmation_window(payload)
+   def show_confirmation_window(self, payload):
+       self.confirmation_window = ConfirmationWindow(self, payload)
+       self.hide()
+       self.confirmation_window.show()
+if __name__ == '__main__':
+   app = QApplication(sys.argv)
+   main = MainWindow()
+   main.show()
+   sys.exit(app.exec())
