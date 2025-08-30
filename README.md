@@ -1,4 +1,4 @@
-This project aims to extract important employee information (DOB, SSN, EmployeeID, Taxes, Deductions) from payroll PDF documents from a variety of vendors. It consists of three files with contents as seen below:
+This project aims to extract important employee information (DOB, SSN, EmployeeID, Taxes, Deductions) from payroll PDF documents from vendors and output the information in structured JSON format. It consists of three files with contents as seen below:
 
 Connecting to API with Integrated GUI:
 
