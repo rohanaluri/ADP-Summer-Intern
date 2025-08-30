@@ -22,4 +22,4 @@ Source Code for Extraction and Accuracy:
 
   - Aggregates results per vendor (process_document) and compares to ground_truths (compare_with_ground_truth) to report overall and per-vendor accuracy.
 
-  - Tracks token usage/cost via get_openai_callback; expects llm, templates, examples, and vendor_pdfs from config.
+  - Tracks token usage/cost via get_openai_callback and expects llm, templates, examples, and vendor_pdf variables from configuration.
